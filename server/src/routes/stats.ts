@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { db } from '../db.js';
+import { one, q } from '../db.js';
 import { env } from '../env.js';
 import { CONTACT_STATUSES } from '../statuses.js';
 
@@ -13,62 +13,47 @@ function startOfTodayISO(): string {
   return new Date(local.getTime() + tzDiff).toISOString();
 }
 
-statsRouter.get('/', (_req, res) => {
+statsRouter.get('/', async (_req, res) => {
   const todayStart = startOfTodayISO();
 
-  const doorsToday = (
-    db
-      .prepare(`SELECT COUNT(*) AS n FROM activity_log WHERE type = 'created' AND created_at >= ?`)
-      .get(todayStart) as { n: number }
-  ).n;
+  const count = async (sql: string, params: unknown[] = []) =>
+    (await one<{ n: number }>(sql, params))!.n;
 
-  const contactPlaceholders = CONTACT_STATUSES.map(() => '?').join(', ');
-  const contactedToday = (
-    db
-      .prepare(
-        `SELECT COUNT(DISTINCT lead_id) AS n FROM activity_log
-         WHERE created_at >= ? AND meta IN (${contactPlaceholders})`
-      )
-      .get(todayStart, ...CONTACT_STATUSES) as { n: number }
-  ).n;
+  const doorsToday = await count(
+    `SELECT COUNT(*)::int AS n FROM activity_log WHERE type = 'created' AND created_at >= $1`,
+    [todayStart]
+  );
 
-  const demosSetToday = (
-    db
-      .prepare(
-        `SELECT COUNT(DISTINCT lead_id) AS n FROM activity_log
-         WHERE created_at >= ? AND meta = 'demo_scheduled'`
-      )
-      .get(todayStart) as { n: number }
-  ).n;
+  const contactPlaceholders = CONTACT_STATUSES.map((_, i) => `$${i + 2}`).join(', ');
+  const contactedToday = await count(
+    `SELECT COUNT(DISTINCT lead_id)::int AS n FROM activity_log
+     WHERE created_at >= $1 AND meta IN (${contactPlaceholders})`,
+    [todayStart, ...CONTACT_STATUSES]
+  );
 
-  const demosClosedToday = (
-    db
-      .prepare(
-        `SELECT COUNT(DISTINCT lead_id) AS n FROM activity_log
-         WHERE created_at >= ? AND meta = 'closed_won'`
-      )
-      .get(todayStart) as { n: number }
-  ).n;
+  const demosSetToday = await count(
+    `SELECT COUNT(DISTINCT lead_id)::int AS n FROM activity_log
+     WHERE created_at >= $1 AND meta = 'demo_scheduled'`,
+    [todayStart]
+  );
 
-  const totalDoors = (db.prepare('SELECT COUNT(*) AS n FROM leads').get() as { n: number }).n;
+  const demosClosedToday = await count(
+    `SELECT COUNT(DISTINCT lead_id)::int AS n FROM activity_log
+     WHERE created_at >= $1 AND meta = 'closed_won'`,
+    [todayStart]
+  );
 
-  const everDemo = (
-    db
-      .prepare(
-        `SELECT COUNT(DISTINCT lead_id) AS n FROM activity_log WHERE meta = 'demo_scheduled'`
-      )
-      .get() as { n: number }
-  ).n;
+  const totalDoors = await count('SELECT COUNT(*)::int AS n FROM leads');
 
-  const closedWon = (
-    db.prepare(`SELECT COUNT(*) AS n FROM leads WHERE status = 'closed_won'`).get() as {
-      n: number;
-    }
-  ).n;
+  const everDemo = await count(
+    `SELECT COUNT(DISTINCT lead_id)::int AS n FROM activity_log WHERE meta = 'demo_scheduled'`
+  );
 
-  const byStatus = db
-    .prepare('SELECT status, COUNT(*) AS n FROM leads GROUP BY status')
-    .all() as Array<{ status: string; n: number }>;
+  const closedWon = await count(`SELECT COUNT(*)::int AS n FROM leads WHERE status = 'closed_won'`);
+
+  const byStatus = await q<{ status: string; n: number }>(
+    'SELECT status, COUNT(*)::int AS n FROM leads GROUP BY status'
+  );
 
   res.json({
     today: {

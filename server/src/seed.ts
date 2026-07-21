@@ -1,5 +1,6 @@
-import { db, logActivity, now } from './db.js';
 import { STATUS_LABELS, type LeadStatus } from './statuses.js';
+
+type RawQuery = (text: string, params?: unknown[]) => Promise<unknown[]>;
 
 interface SeedLead {
   street: string;
@@ -13,7 +14,6 @@ interface SeedLead {
   email?: string;
   notes?: string;
   source?: string;
-  follow_up_at?: string;
 }
 
 // Sample doors in Downers Grove and Lombard, IL — pre-geocoded so the map
@@ -109,57 +109,58 @@ const SAMPLE_LEADS: SeedLead[] = [
   },
 ];
 
-export function seedIfEmpty() {
-  const repCount = (db.prepare('SELECT COUNT(*) AS n FROM reps').get() as { n: number }).n;
-  if (repCount === 0) {
-    db.prepare('INSERT INTO reps (name, email) VALUES (?, ?)').run('Me', null);
+export async function seedIfEmpty(query: RawQuery): Promise<void> {
+  const reps = (await query('SELECT COUNT(*)::int AS n FROM reps')) as Array<{ n: number }>;
+  if (reps[0].n === 0) {
+    await query('INSERT INTO reps (name, email) VALUES ($1, $2)', ['Me', null]);
   }
 
-  const leadCount = (db.prepare('SELECT COUNT(*) AS n FROM leads').get() as { n: number }).n;
-  if (leadCount > 0) return;
-
-  const insert = db.prepare(
-    `INSERT INTO leads (street, city, zip, lat, lng, status, homeowner_name, phone, email,
-                        notes, source, assigned_rep_id, follow_up_at, demo_start, demo_duration_min,
-                        created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)`
-  );
+  const leads = (await query('SELECT COUNT(*)::int AS n FROM leads')) as Array<{ n: number }>;
+  if (leads[0].n > 0) return;
 
   // A demo tomorrow at 10:00 for the demo_scheduled sample lead
   const tomorrow = new Date(Date.now() + 24 * 3600 * 1000);
   const demoStart = `${tomorrow.toISOString().slice(0, 10)}T10:00`;
 
   for (const lead of SAMPLE_LEADS) {
-    const ts = now();
+    const ts = new Date().toISOString();
     const isDemo = lead.status === 'demo_scheduled';
-    const result = insert.run(
-      lead.street,
-      lead.city,
-      lead.zip,
-      lead.lat,
-      lead.lng,
-      lead.status,
-      lead.homeowner_name ?? null,
-      lead.phone ?? null,
-      lead.email ?? null,
-      lead.notes ?? '',
-      lead.source ?? 'd2d',
-      lead.follow_up_at ?? null,
-      isDemo ? demoStart : null,
-      isDemo ? 60 : null,
-      ts,
-      ts
+    const inserted = (await query(
+      `INSERT INTO leads (street, city, zip, lat, lng, status, homeowner_name, phone, email,
+                          notes, source, assigned_rep_id, demo_start, demo_duration_min,
+                          created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 1, $12, $13, $14, $15)
+       RETURNING id`,
+      [
+        lead.street,
+        lead.city,
+        lead.zip,
+        lead.lat,
+        lead.lng,
+        lead.status,
+        lead.homeowner_name ?? null,
+        lead.phone ?? null,
+        lead.email ?? null,
+        lead.notes ?? '',
+        lead.source ?? 'd2d',
+        isDemo ? demoStart : null,
+        isDemo ? 60 : null,
+        ts,
+        ts,
+      ]
+    )) as Array<{ id: number }>;
+    const id = inserted[0].id;
+
+    await query(
+      'INSERT INTO activity_log (lead_id, type, meta, message, created_at) VALUES ($1, $2, $3, $4, $5)',
+      [id, 'created', lead.status, `Door added — ${STATUS_LABELS[lead.status]}`, ts]
     );
-    const id = Number(result.lastInsertRowid);
-    logActivity(id, 'created', `Door added — ${STATUS_LABELS[lead.status]}`, lead.status);
     if (isDemo) {
-      logActivity(id, 'calendar', `Demo scheduled for ${demoStart.replace('T', ' ')} (60 min)`);
+      await query(
+        'INSERT INTO activity_log (lead_id, type, meta, message, created_at) VALUES ($1, $2, $3, $4, $5)',
+        [id, 'calendar', null, `Demo scheduled for ${demoStart.replace('T', ' ')} (60 min)`, ts]
+      );
     }
   }
   console.log(`Seeded ${SAMPLE_LEADS.length} sample leads.`);
-}
-
-// Allow running directly: npm run seed
-if (process.argv[1] && process.argv[1].endsWith('seed.ts')) {
-  seedIfEmpty();
 }

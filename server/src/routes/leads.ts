@@ -1,57 +1,53 @@
 import { Router } from 'express';
-import { db, logActivity, now } from '../db.js';
+import { logActivity, now, one, q, run } from '../db.js';
 import { STATUSES, STATUS_LABELS, SOURCES, type LeadStatus } from '../statuses.js';
 import { geocode } from '../services/geocode.js';
 import * as google from '../services/google.js';
-import { buildEventInput, fullAddress, type LeadRow } from '../services/calendarSync.js';
+import { buildEventInput, type LeadRow } from '../services/calendarSync.js';
 
 export const leadsRouter = Router();
 
-const getLead = (id: number | string) =>
-  db.prepare('SELECT * FROM leads WHERE id = ?').get(id) as (LeadRow & Record<string, unknown>) | undefined;
+type FullLead = LeadRow & Record<string, unknown>;
 
-function withActivity(lead: LeadRow & Record<string, unknown>) {
-  const activity = db
-    .prepare('SELECT * FROM activity_log WHERE lead_id = ? ORDER BY created_at DESC, id DESC')
-    .all(lead.id);
+const getLead = (id: number | string) =>
+  one<FullLead>('SELECT * FROM leads WHERE id = $1', [id]);
+
+async function withActivity(lead: FullLead) {
+  const activity = await q(
+    'SELECT * FROM activity_log WHERE lead_id = $1 ORDER BY created_at DESC, id DESC',
+    [lead.id]
+  );
   return { ...lead, activity };
 }
 
 // List leads with optional filters: ?status=&city=&q=&source=
-leadsRouter.get('/', (req, res) => {
+leadsRouter.get('/', async (req, res) => {
   const clauses: string[] = [];
   const params: unknown[] = [];
-  const { status, city, q, source } = req.query;
-  if (typeof status === 'string' && status) {
-    clauses.push('status = ?');
-    params.push(status);
-  }
-  if (typeof city === 'string' && city) {
-    clauses.push('LOWER(city) = LOWER(?)');
-    params.push(city);
-  }
-  if (typeof source === 'string' && source) {
-    clauses.push('source = ?');
-    params.push(source);
-  }
-  if (typeof q === 'string' && q) {
-    clauses.push('(street LIKE ? OR homeowner_name LIKE ? OR notes LIKE ?)');
-    params.push(`%${q}%`, `%${q}%`, `%${q}%`);
+  const { status, city, q: search, source } = req.query;
+  const add = (clause: string, value: unknown) => {
+    params.push(value);
+    clauses.push(clause.replace('?', `$${params.length}`));
+  };
+  if (typeof status === 'string' && status) add('status = ?', status);
+  if (typeof city === 'string' && city) add('LOWER(city) = LOWER(?)', city);
+  if (typeof source === 'string' && source) add('source = ?', source);
+  if (typeof search === 'string' && search) {
+    params.push(`%${search}%`);
+    const n = `$${params.length}`;
+    clauses.push(`(street ILIKE ${n} OR homeowner_name ILIKE ${n} OR notes ILIKE ${n})`);
   }
   const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
-  const rows = db
-    .prepare(`SELECT * FROM leads ${where} ORDER BY updated_at DESC`)
-    .all(...params);
-  res.json(rows);
+  res.json(await q(`SELECT * FROM leads ${where} ORDER BY updated_at DESC`, params));
 });
 
-leadsRouter.get('/:id', (req, res) => {
-  const lead = getLead(req.params.id);
+leadsRouter.get('/:id', async (req, res) => {
+  const lead = await getLead(req.params.id);
   if (!lead) {
     res.status(404).json({ error: 'Lead not found' });
     return;
   }
-  res.json(withActivity(lead));
+  res.json(await withActivity(lead));
 });
 
 // Create a door/lead. Only street + city are required so the quick-add flow
@@ -86,13 +82,12 @@ leadsRouter.post('/', async (req, res) => {
 
   const coords = await geocode(street, city, zip);
   const ts = now();
-  const result = db
-    .prepare(
-      `INSERT INTO leads (street, city, zip, lat, lng, status, homeowner_name, phone, email,
-                          notes, source, assigned_rep_id, follow_up_at, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    )
-    .run(
+  const inserted = await one<{ id: number }>(
+    `INSERT INTO leads (street, city, zip, lat, lng, status, homeowner_name, phone, email,
+                        notes, source, assigned_rep_id, follow_up_at, created_at, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+     RETURNING id`,
+    [
       street,
       city,
       zip ?? null,
@@ -107,16 +102,17 @@ leadsRouter.post('/', async (req, res) => {
       assigned_rep_id,
       follow_up_at ?? null,
       ts,
-      ts
-    );
+      ts,
+    ]
+  );
 
-  const id = Number(result.lastInsertRowid);
-  logActivity(id, 'created', `Door added — ${STATUS_LABELS[status as LeadStatus]}`, status);
-  res.status(201).json(withActivity(getLead(id)!));
+  const id = inserted!.id;
+  await logActivity(id, 'created', `Door added — ${STATUS_LABELS[status as LeadStatus]}`, status);
+  res.status(201).json(await withActivity((await getLead(id))!));
 });
 
 leadsRouter.patch('/:id', async (req, res) => {
-  const lead = getLead(req.params.id);
+  const lead = await getLead(req.params.id);
   if (!lead) {
     res.status(404).json({ error: 'Lead not found' });
     return;
@@ -169,18 +165,17 @@ leadsRouter.patch('/:id', async (req, res) => {
 
   if (Object.keys(updates).length) {
     updates.updated_at = now();
-    const setSql = Object.keys(updates)
-      .map((k) => `${k} = ?`)
-      .join(', ');
-    db.prepare(`UPDATE leads SET ${setSql} WHERE id = ?`).run(
-      ...Object.values(updates),
-      lead.id
-    );
+    const keys = Object.keys(updates);
+    const setSql = keys.map((k, i) => `${k} = $${i + 1}`).join(', ');
+    await run(`UPDATE leads SET ${setSql} WHERE id = $${keys.length + 1}`, [
+      ...keys.map((k) => updates[k]),
+      lead.id,
+    ]);
   }
 
   if (statusChanged) {
     const newStatus = updates.status as LeadStatus;
-    logActivity(
+    await logActivity(
       lead.id,
       'status',
       `Status changed: ${STATUS_LABELS[lead.status]} → ${STATUS_LABELS[newStatus]}`,
@@ -195,21 +190,22 @@ leadsRouter.patch('/:id', async (req, res) => {
     ) {
       try {
         await google.deleteEvent(lead.gcal_event_id);
-        db.prepare(
-          'UPDATE leads SET gcal_event_id = NULL, demo_start = NULL, demo_duration_min = NULL WHERE id = ?'
-        ).run(lead.id);
-        logActivity(lead.id, 'calendar', 'Demo appointment removed from Google Calendar');
+        await run(
+          'UPDATE leads SET gcal_event_id = NULL, demo_start = NULL, demo_duration_min = NULL WHERE id = $1',
+          [lead.id]
+        );
+        await logActivity(lead.id, 'calendar', 'Demo appointment removed from Google Calendar');
       } catch (err) {
         console.error('Failed to delete calendar event:', err);
       }
     }
   }
 
-  res.json(withActivity(getLead(lead.id)!));
+  res.json(await withActivity((await getLead(lead.id))!));
 });
 
 leadsRouter.delete('/:id', async (req, res) => {
-  const lead = getLead(req.params.id);
+  const lead = await getLead(req.params.id);
   if (!lead) {
     res.status(404).json({ error: 'Lead not found' });
     return;
@@ -221,14 +217,14 @@ leadsRouter.delete('/:id', async (req, res) => {
       console.error('Failed to delete calendar event:', err);
     }
   }
-  db.prepare('DELETE FROM leads WHERE id = ?').run(lead.id);
+  await run('DELETE FROM leads WHERE id = $1', [lead.id]);
   res.json({ ok: true });
 });
 
 // Schedule (or reschedule) a demo: creates/updates the real Google Calendar
 // event and stores its ID on the lead.
 leadsRouter.post('/:id/schedule', async (req, res) => {
-  const lead = getLead(req.params.id);
+  const lead = await getLead(req.params.id);
   if (!lead) {
     res.status(404).json({ error: 'Lead not found' });
     return;
@@ -245,7 +241,7 @@ leadsRouter.post('/:id/schedule', async (req, res) => {
   let calendarError: string | null = null;
 
   const input = buildEventInput({ ...lead, status: 'demo_scheduled' }, start, duration);
-  if (google.isConnected()) {
+  if (await google.isConnected()) {
     try {
       if (eventId) {
         await google.updateEvent(eventId, input);
@@ -262,13 +258,14 @@ leadsRouter.post('/:id/schedule', async (req, res) => {
   }
 
   const wasScheduled = lead.status === 'demo_scheduled';
-  db.prepare(
-    `UPDATE leads SET status = 'demo_scheduled', demo_start = ?, demo_duration_min = ?,
-                      gcal_event_id = ?, updated_at = ? WHERE id = ?`
-  ).run(start, duration, eventId ?? null, now(), lead.id);
+  await run(
+    `UPDATE leads SET status = 'demo_scheduled', demo_start = $1, demo_duration_min = $2,
+                      gcal_event_id = $3, updated_at = $4 WHERE id = $5`,
+    [start, duration, eventId ?? null, now(), lead.id]
+  );
 
   if (!wasScheduled) {
-    logActivity(
+    await logActivity(
       lead.id,
       'status',
       `Status changed: ${STATUS_LABELS[lead.status]} → ${STATUS_LABELS.demo_scheduled}`,
@@ -276,7 +273,7 @@ leadsRouter.post('/:id/schedule', async (req, res) => {
     );
   }
   const whenLabel = `${start.slice(0, 10)} ${start.slice(11, 16)}`;
-  logActivity(
+  await logActivity(
     lead.id,
     'calendar',
     calendarSynced
@@ -284,13 +281,17 @@ leadsRouter.post('/:id/schedule', async (req, res) => {
       : `Demo ${wasScheduled ? 'rescheduled' : 'scheduled'} for ${whenLabel} (${duration} min)`
   );
 
-  res.json({ ...withActivity(getLead(lead.id)!), calendar_synced: calendarSynced, calendar_error: calendarError });
+  res.json({
+    ...(await withActivity((await getLead(lead.id))!)),
+    calendar_synced: calendarSynced,
+    calendar_error: calendarError,
+  });
 });
 
 // Cancel a scheduled demo: deletes the Google Calendar event and moves the
 // lead to the given status (default callback_later).
 leadsRouter.delete('/:id/schedule', async (req, res) => {
-  const lead = getLead(req.params.id);
+  const lead = await getLead(req.params.id);
   if (!lead) {
     res.status(404).json({ error: 'Lead not found' });
     return;
@@ -304,26 +305,25 @@ leadsRouter.delete('/:id/schedule', async (req, res) => {
   if (lead.gcal_event_id) {
     try {
       await google.deleteEvent(lead.gcal_event_id);
-      logActivity(lead.id, 'calendar', 'Demo appointment removed from Google Calendar');
+      await logActivity(lead.id, 'calendar', 'Demo appointment removed from Google Calendar');
     } catch (err) {
       console.error('Failed to delete calendar event:', err);
     }
   }
 
-  db.prepare(
-    `UPDATE leads SET status = ?, demo_start = NULL, demo_duration_min = NULL,
-                      gcal_event_id = NULL, updated_at = ? WHERE id = ?`
-  ).run(nextStatus, now(), lead.id);
+  await run(
+    `UPDATE leads SET status = $1, demo_start = NULL, demo_duration_min = NULL,
+                      gcal_event_id = NULL, updated_at = $2 WHERE id = $3`,
+    [nextStatus, now(), lead.id]
+  );
 
   if (lead.status !== nextStatus) {
-    logActivity(
+    await logActivity(
       lead.id,
       'status',
       `Status changed: ${STATUS_LABELS[lead.status]} → ${STATUS_LABELS[nextStatus as LeadStatus]}`,
       nextStatus
     );
   }
-  res.json(withActivity(getLead(lead.id)!));
+  res.json(await withActivity((await getLead(lead.id))!));
 });
-
-export { fullAddress };

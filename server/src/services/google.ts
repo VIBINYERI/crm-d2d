@@ -1,4 +1,4 @@
-import { db } from '../db.js';
+import { one, run } from '../db.js';
 import { env, googleConfigured } from '../env.js';
 
 const AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
@@ -13,47 +13,49 @@ const SCOPES = [
 interface TokenRow {
   access_token: string | null;
   refresh_token: string | null;
-  expiry_ms: number | null;
+  expiry_ms: number | string | null;
   account_email: string | null;
 }
 
-function getTokens(): TokenRow | undefined {
-  return db.prepare('SELECT * FROM google_auth WHERE id = 1').get() as TokenRow | undefined;
+function getTokens(): Promise<TokenRow | undefined> {
+  return one<TokenRow>('SELECT * FROM google_auth WHERE id = 1');
 }
 
-function saveTokens(t: {
+async function saveTokens(t: {
   access_token: string;
   refresh_token?: string | null;
   expiry_ms: number;
   account_email?: string | null;
-}) {
-  const existing = getTokens();
-  db.prepare(
+}): Promise<void> {
+  const existing = await getTokens();
+  await run(
     `INSERT INTO google_auth (id, access_token, refresh_token, expiry_ms, account_email)
-     VALUES (1, ?, ?, ?, ?)
-     ON CONFLICT(id) DO UPDATE SET
+     VALUES (1, $1, $2, $3, $4)
+     ON CONFLICT (id) DO UPDATE SET
        access_token = excluded.access_token,
        refresh_token = excluded.refresh_token,
        expiry_ms = excluded.expiry_ms,
-       account_email = excluded.account_email`
-  ).run(
-    t.access_token,
-    t.refresh_token ?? existing?.refresh_token ?? null,
-    t.expiry_ms,
-    t.account_email ?? existing?.account_email ?? null
+       account_email = excluded.account_email`,
+    [
+      t.access_token,
+      t.refresh_token ?? existing?.refresh_token ?? null,
+      t.expiry_ms,
+      t.account_email ?? existing?.account_email ?? null,
+    ]
   );
 }
 
-export function isConnected(): boolean {
-  return googleConfigured() && Boolean(getTokens()?.refresh_token);
+export async function isConnected(): Promise<boolean> {
+  if (!googleConfigured()) return false;
+  return Boolean((await getTokens())?.refresh_token);
 }
 
-export function connectedEmail(): string | null {
-  return getTokens()?.account_email ?? null;
+export async function connectedEmail(): Promise<string | null> {
+  return (await getTokens())?.account_email ?? null;
 }
 
-export function disconnect() {
-  db.prepare('DELETE FROM google_auth WHERE id = 1').run();
+export async function disconnect(): Promise<void> {
+  await run('DELETE FROM google_auth WHERE id = 1');
 }
 
 export function getAuthUrl(): string {
@@ -99,7 +101,7 @@ export async function exchangeCode(code: string): Promise<void> {
     // email is cosmetic — ignore failures
   }
 
-  saveTokens({
+  await saveTokens({
     access_token: data.access_token,
     refresh_token: data.refresh_token,
     expiry_ms: Date.now() + data.expires_in * 1000,
@@ -120,18 +122,22 @@ async function refreshAccessToken(refreshToken: string): Promise<string> {
   });
   if (!res.ok) {
     // A revoked refresh token means the user must reconnect.
-    if (res.status === 400 || res.status === 401) disconnect();
+    if (res.status === 400 || res.status === 401) await disconnect();
     throw new Error(`Token refresh failed: ${res.status} ${await res.text()}`);
   }
   const data = (await res.json()) as { access_token: string; expires_in: number };
-  saveTokens({ access_token: data.access_token, expiry_ms: Date.now() + data.expires_in * 1000 });
+  await saveTokens({
+    access_token: data.access_token,
+    expiry_ms: Date.now() + data.expires_in * 1000,
+  });
   return data.access_token;
 }
 
 async function getAccessToken(): Promise<string> {
-  const tokens = getTokens();
+  const tokens = await getTokens();
   if (!tokens?.refresh_token) throw new Error('Google Calendar is not connected');
-  if (tokens.access_token && tokens.expiry_ms && tokens.expiry_ms > Date.now() + 60_000) {
+  const expiry = Number(tokens.expiry_ms ?? 0);
+  if (tokens.access_token && expiry > Date.now() + 60_000) {
     return tokens.access_token;
   }
   return refreshAccessToken(tokens.refresh_token);

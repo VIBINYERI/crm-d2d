@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import * as google from '../services/google.js';
-import { db } from '../db.js';
+import { q } from '../db.js';
 import { env } from '../env.js';
 
 export const calendarRouter = Router();
@@ -24,13 +24,8 @@ calendarRouter.get('/week', async (req, res) => {
   const offset = Number(req.query.offset) || 0;
   const { start, end } = weekBounds(offset);
 
-  if (!google.isConnected()) {
-    const demos = db
-      .prepare(
-        `SELECT id, street, city, zip, homeowner_name, demo_start, demo_duration_min
-         FROM leads WHERE demo_start IS NOT NULL ORDER BY demo_start`
-      )
-      .all() as Array<{
+  if (!(await google.isConnected())) {
+    const demos = await q<{
       id: number;
       street: string;
       city: string;
@@ -38,7 +33,10 @@ calendarRouter.get('/week', async (req, res) => {
       homeowner_name: string | null;
       demo_start: string;
       demo_duration_min: number | null;
-    }>;
+    }>(
+      `SELECT id, street, city, zip, homeowner_name, demo_start, demo_duration_min
+       FROM leads WHERE demo_start IS NOT NULL ORDER BY demo_start`
+    );
     const events = demos
       .filter((d) => {
         const t = new Date(`${d.demo_start.length === 16 ? d.demo_start + ':00' : d.demo_start}`);
@@ -61,9 +59,9 @@ calendarRouter.get('/week', async (req, res) => {
   try {
     const events = await google.listEvents(start.toISOString(), end.toISOString());
     // Attach lead IDs to events we created, so the UI can link back.
-    const leads = db
-      .prepare('SELECT id, gcal_event_id FROM leads WHERE gcal_event_id IS NOT NULL')
-      .all() as Array<{ id: number; gcal_event_id: string }>;
+    const leads = await q<{ id: number; gcal_event_id: string }>(
+      'SELECT id, gcal_event_id FROM leads WHERE gcal_event_id IS NOT NULL'
+    );
     const byEventId = new Map(leads.map((l) => [l.gcal_event_id, l.id]));
     res.json({
       connected: true,

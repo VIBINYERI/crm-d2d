@@ -2,7 +2,8 @@
 
 A mobile-first door-to-door sales CRM for a residential window detailing business
 (Downers Grove & Lombard, IL), with real Google Calendar integration for demo
-appointments.
+appointments. Built to deploy on **Vercel** (frontend + serverless API + Neon
+Postgres) and to run locally with zero configuration.
 
 ## Features
 
@@ -32,25 +33,28 @@ appointments.
 
 ## Stack
 
-| Piece    | Tech                                              |
-| -------- | ------------------------------------------------- |
-| Frontend | React 19 + Vite + TypeScript + Tailwind CSS v4    |
-| Backend  | Node + Express (TypeScript, run with `tsx`)       |
-| Database | SQLite via `better-sqlite3` (file: `server/data/crm.db`) |
-| Map      | Leaflet + OpenStreetMap tiles                     |
-| Geocoding| OpenStreetMap Nominatim (free, no key)            |
-| Calendar | Google Calendar REST API + OAuth 2.0              |
+| Piece    | Tech                                                    |
+| -------- | ------------------------------------------------------- |
+| Frontend | React 19 + Vite + TypeScript + Tailwind CSS v4          |
+| Backend  | Express (TypeScript) — local server *or* one Vercel serverless function |
+| Database | Postgres — Neon on Vercel; embedded PGlite for local dev |
+| Map      | Leaflet + OpenStreetMap tiles                           |
+| Geocoding| OpenStreetMap Nominatim (free, no key)                  |
+| Calendar | Google Calendar REST API + OAuth 2.0                    |
 
 ## Project structure
 
 ```
 crm-d2d/
 ├── package.json          # npm workspaces root (npm run dev starts both apps)
+├── vercel.json           # Vercel build + rewrites (SPA fallback, /api → function)
+├── api/index.js          # Vercel serverless entry — wraps the Express app
 ├── server/
-│   ├── .env.example      # copy to .env and fill in
+│   ├── .env.example      # copy to .env for local dev
 │   └── src/
-│       ├── index.ts      # Express app
-│       ├── db.ts         # SQLite schema + helpers
+│       ├── app.ts        # Express app (shared by local server + Vercel function)
+│       ├── index.ts      # local dev entry (app.listen)
+│       ├── db.ts         # Postgres pool / PGlite + schema + lazy init
 │       ├── seed.ts       # sample leads (auto-seeds an empty DB)
 │       ├── statuses.ts   # pipeline definition
 │       ├── routes/       # leads, auth, calendar, stats, reps
@@ -63,7 +67,7 @@ crm-d2d/
         └── statusMeta.ts # status labels/colors shared across views
 ```
 
-## Setup
+## Run locally
 
 ```bash
 git clone <this repo>
@@ -73,13 +77,28 @@ cp server/.env.example server/.env
 npm run dev                     # server on :4000, client on :5173
 ```
 
-Open http://localhost:5173 — the database is created and seeded with 8 sample
-leads on first run. On your phone, open `http://<your-computer's-LAN-IP>:5173`
-(the Vite dev server listens on all interfaces).
+Open http://localhost:5173 — with no `DATABASE_URL` set, an embedded Postgres
+(PGlite) is created at `server/data/pg` and seeded with 8 sample leads
+automatically. On your phone, open `http://<your-computer's-LAN-IP>:5173`.
 
-Everything works without Google credentials except calendar sync — demos are
-then saved in the CRM only, and the Week view shows CRM demos instead of your
-full calendar.
+## Deploy to Vercel
+
+1. **Import the repo** at [vercel.com/new](https://vercel.com/new). The included
+   `vercel.json` handles everything — keep Root Directory as the repo root and
+   don't override build settings. The frontend deploys as a static site and the
+   Express API runs as a serverless function under `/api`.
+2. **Add a database** (required — without it, data resets between requests):
+   in your Vercel project go to **Storage → Create Database → Neon (Postgres)**
+   → connect it to the project. This injects `DATABASE_URL` automatically.
+   Redeploy after connecting.
+3. **Add Google credentials** (for calendar sync): in **Settings → Environment
+   Variables** add `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` (setup below).
+   `APP_URL` and the OAuth redirect URI are derived from your Vercel production
+   domain automatically; set them explicitly only if you use a custom domain.
+4. Open the deployed app → **⚙️ Settings → Connect Google Calendar**.
+
+The database schema is created and sample data seeded automatically on the
+first request.
 
 ## Google Calendar API credentials
 
@@ -91,37 +110,31 @@ full calendar.
    fill in app name + your email. Add yourself under **Test users** (while the
    app is in "Testing" mode only test users can sign in — that's fine for
    personal use).
-4. **Scopes**: add `.../auth/calendar.events` and `.../auth/userinfo.email`
-   (or skip — scopes are requested at sign-in anyway).
-5. **Credentials**: APIs & Services → Credentials → Create Credentials → OAuth
-   client ID → type **Web application**:
-   - Authorized redirect URI: `http://localhost:4000/api/auth/google/callback`
-6. Copy the **Client ID** and **Client Secret** into `server/.env`:
+4. **Credentials**: APIs & Services → Credentials → Create Credentials → OAuth
+   client ID → type **Web application**. Add BOTH redirect URIs:
+   - `https://<your-app>.vercel.app/api/auth/google/callback` (production)
+   - `http://localhost:4000/api/auth/google/callback` (local dev)
+5. Copy the **Client ID** and **Client Secret** into the Vercel environment
+   variables (and into `server/.env` for local dev):
 
    ```env
    GOOGLE_CLIENT_ID=xxxxxxxx.apps.googleusercontent.com
    GOOGLE_CLIENT_SECRET=GOCSPX-xxxxxxxx
-   GOOGLE_REDIRECT_URI=http://localhost:4000/api/auth/google/callback
    ```
 
-7. Restart the server, open the app → **Settings (⚙️) → Connect Google
-   Calendar**, and approve. You authenticate once; the refresh token is stored
-   in SQLite (server-side only, never sent to the browser) and access tokens
-   are refreshed automatically. Google's "unverified app" warning is expected
-   in Testing mode — click *Continue*.
-
-> **Note on tokens**: OAuth tokens live in the `google_auth` table of
-> `server/data/crm.db`. Keep that file (and `.env`) out of version control —
-> both are already in `.gitignore`.
+6. Redeploy (or restart the local server), open the app → **Settings (⚙️) →
+   Connect Google Calendar**, and approve. You authenticate once; the refresh
+   token is stored in the database (server-side only, never sent to the
+   browser) and access tokens are refreshed automatically. Google's
+   "unverified app" warning is expected in Testing mode — click *Continue*.
 
 ## Scripts
 
-| Command                | What it does                              |
-| ---------------------- | ----------------------------------------- |
-| `npm run dev`          | Run server (:4000) + client (:5173)       |
-| `npm run build`        | Type-check + build both apps              |
-| `npm run seed`         | Seed sample data into an empty DB         |
-| `npm start`            | Run the compiled server (`server/dist`)   |
+| Command                | What it does                                     |
+| ---------------------- | ------------------------------------------------ |
+| `npm run dev`          | Run server (:4000) + client (:5173) locally      |
+| `npm run build`        | Type-check + build both apps (also used by Vercel) |
+| `npm start`            | Run the compiled server (`server/dist`) locally  |
 
 ## API overview
 

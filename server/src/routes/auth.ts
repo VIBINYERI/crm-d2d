@@ -7,7 +7,8 @@ export const authRouter = Router();
 authRouter.get('/google', (_req, res) => {
   if (!googleConfigured()) {
     res.status(400).json({
-      error: 'Google OAuth is not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in server/.env (see README).',
+      error:
+        'Google OAuth is not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET (see README).',
     });
     return;
   }
@@ -29,15 +30,15 @@ authRouter.get('/google/callback', async (req, res) => {
   }
 });
 
-authRouter.get('/google/status', (_req, res) => {
+authRouter.get('/google/status', async (_req, res) => {
   res.json({
     configured: googleConfigured(),
-    connected: google.isConnected(),
-    email: google.connectedEmail(),
+    connected: await google.isConnected(),
+    email: await google.connectedEmail(),
   });
 });
 
-authRouter.post('/google/disconnect', (_req, res) => {
-  google.disconnect();
+authRouter.post('/google/disconnect', async (_req, res) => {
+  await google.disconnect();
   res.json({ ok: true });
 });
