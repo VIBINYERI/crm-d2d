@@ -12,6 +12,19 @@ export default function Doors() {
   const [status, setStatus] = useState<LeadStatus | ''>('');
   const [city, setCity] = useState('');
   const [loading, setLoading] = useState(true);
+  const [deleting, setDeleting] = useState<number | null>(null);
+
+  // One-tap delete by design — no confirmation. Deleting also removes the
+  // lead's Google Calendar event if one exists.
+  const remove = async (id: number) => {
+    setDeleting(id);
+    try {
+      await api.deleteLead(id);
+      setLeads((prev) => prev.filter((l) => l.id !== id));
+    } finally {
+      setDeleting(null);
+    }
+  };
 
   useEffect(() => {
     setLoading(true);
@@ -84,11 +97,11 @@ export default function Doors() {
         ) : (
           <ul className="space-y-2">
             {leads.map((lead) => (
-              <li key={lead.id}>
-                <Link
-                  to={`/doors/${lead.id}`}
-                  className="block rounded-2xl border border-slate-200 bg-white p-4 shadow-sm active:bg-slate-50"
-                >
+              <li
+                key={lead.id}
+                className="flex items-stretch overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm"
+              >
+                <Link to={`/doors/${lead.id}`} className="min-w-0 flex-1 p-4 active:bg-slate-50">
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
                       <div className="truncate font-semibold text-slate-900">{lead.street}</div>
@@ -110,6 +123,14 @@ export default function Doors() {
                     </div>
                   )}
                 </Link>
+                <button
+                  onClick={() => remove(lead.id)}
+                  disabled={deleting === lead.id}
+                  aria-label={`Delete ${lead.street}`}
+                  className="flex w-12 shrink-0 items-center justify-center border-l border-slate-100 text-lg text-slate-300 active:bg-red-50 active:text-red-600 disabled:opacity-40"
+                >
+                  🗑
+                </button>
               </li>
             ))}
           </ul>

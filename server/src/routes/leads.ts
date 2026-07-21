@@ -57,6 +57,8 @@ leadsRouter.post('/', async (req, res) => {
     street,
     city,
     zip,
+    lat,
+    lng,
     status = 'not_home',
     homeowner_name,
     phone,
@@ -80,7 +82,12 @@ leadsRouter.post('/', async (req, res) => {
     return;
   }
 
-  const coords = await geocode(street, city, zip);
+  // The map's tap-to-add flow sends exact coordinates; only geocode when the
+  // door was typed in by address.
+  const coords =
+    typeof lat === 'number' && typeof lng === 'number'
+      ? { lat, lng }
+      : await geocode(street, city, zip);
   const ts = now();
   const inserted = await one<{ id: number }>(
     `INSERT INTO leads (street, city, zip, lat, lng, status, homeowner_name, phone, email,

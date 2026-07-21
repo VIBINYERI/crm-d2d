@@ -88,7 +88,6 @@ export default function LeadDetail() {
   };
 
   const remove = async () => {
-    if (!confirm('Delete this door? Its calendar event (if any) will also be removed.')) return;
     await api.deleteLead(lead.id);
     navigate('/doors');
   };

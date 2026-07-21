@@ -24,8 +24,12 @@ Postgres) and to run locally with zero configuration.
 - **Week view** — pulls this week's events live from Google Calendar (read-only)
   so demos show alongside everything else. Falls back to CRM-scheduled demos if
   Google isn't connected yet.
-- **Territory map** — Leaflet map with pins color-coded by status, filterable by
-  city (Downers Grove / Lombard), street, and status for route planning.
+- **Territory map** — Google Map (satellite/hybrid by default so you can see
+  actual rooftops) with pins color-coded by status, filterable by city
+  (Downers Grove / Lombard), street, and status. **Tap any house** to
+  reverse-geocode its address and save it as a new door with one more tap
+  (Not Home / Contacted / Interested); tap an existing pin for a quick card
+  with a jump into the record.
 - **Dashboard** — today's doors knocked / contacted / demos set / demos closed,
   all-time doors→demo and demo→close conversion rates, and this week's demos.
 - **Multi-rep ready** — leads carry an `assigned_rep_id`; a `reps` table and API
@@ -38,8 +42,8 @@ Postgres) and to run locally with zero configuration.
 | Frontend | React 19 + Vite + TypeScript + Tailwind CSS v4          |
 | Backend  | Express (TypeScript) — local server *or* one Vercel serverless function |
 | Database | Postgres — Neon on Vercel; embedded PGlite for local dev |
-| Map      | Leaflet + OpenStreetMap tiles                           |
-| Geocoding| OpenStreetMap Nominatim (free, no key)                  |
+| Map      | Google Maps JavaScript API (satellite + tap-to-add)     |
+| Geocoding| Google (map taps) + OpenStreetMap Nominatim (typed addresses) |
 | Calendar | Google Calendar REST API + OAuth 2.0                    |
 
 ## Project structure
@@ -95,10 +99,29 @@ automatically. On your phone, open `http://<your-computer's-LAN-IP>:5173`.
    Variables** add `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` (setup below).
    `APP_URL` and the OAuth redirect URI are derived from your Vercel production
    domain automatically; set them explicitly only if you use a custom domain.
-4. Open the deployed app → **⚙️ Settings → Connect Google Calendar**.
+4. **Add the map key**: also in Environment Variables, add
+   `VITE_GOOGLE_MAPS_API_KEY` (setup below). It's baked into the frontend at
+   build time, so **redeploy after adding it**.
+5. Open the deployed app → **⚙️ Settings → Connect Google Calendar**.
 
 The database schema is created and sample data seeded automatically on the
 first request.
+
+## Google Maps API key (territory map)
+
+In the same Google Cloud project as the calendar credentials:
+
+1. **Enable two APIs**: APIs & Services → Library → enable **Maps JavaScript
+   API** and **Geocoding API**.
+2. **Create a key**: Credentials → Create Credentials → **API key**.
+3. Recommended: restrict the key (Application restrictions → Websites) to
+   `https://<your-app>.vercel.app/*` and `http://localhost:5173/*`, and limit
+   it to the two APIs above.
+4. Set it as `VITE_GOOGLE_MAPS_API_KEY` — in Vercel's Environment Variables
+   (then redeploy), and in `client/.env.local` for local dev (copy
+   `client/.env.example`).
+
+Google's free monthly credit comfortably covers personal use.
 
 ## Google Calendar API credentials
 

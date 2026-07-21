@@ -1,13 +1,7 @@
 @import 'tailwindcss';
-@import 'leaflet/dist/leaflet.css';
 
 html,
 body {
   height: 100%;
   overscroll-behavior-y: none;
-}
-
-/* Keep the map behind the bottom nav */
-.leaflet-container {
-  z-index: 0;
 }
