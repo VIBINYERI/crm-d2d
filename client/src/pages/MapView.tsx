@@ -7,7 +7,12 @@ import StatusBadge from '../components/StatusBadge';
 import { STATUS_META, STATUS_ORDER } from '../statusMeta';
 import type { Lead, LeadStatus } from '../types';
 
-const API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY as string | undefined;
+// Maps JS keys are public by design (they always ship in the browser bundle);
+// abuse protection comes from the key's website restriction in Google Cloud,
+// not secrecy. An env var still takes precedence if set.
+const API_KEY =
+  (import.meta.env.VITE_GOOGLE_MAPS_API_KEY as string | undefined) ||
+  'AIzaSyC8cnp7qoD7n-LslRBVCrqRq6YNDiQnY4o';
 
 // Centered between Downers Grove and Lombard
 const DEFAULT_CENTER = { lat: 41.843, lng: -88.008 };
