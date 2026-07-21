@@ -49,6 +49,7 @@ export const api = {
     }),
   getStats: () => request<Stats>('/stats'),
   getWeek: (offset = 0) => request<WeekResponse>(`/calendar/week?offset=${offset}`),
+  getHealth: () => request<{ ok: boolean; persistent: boolean }>('/health'),
   googleStatus: () => request<GoogleStatus>('/auth/google/status'),
   googleDisconnect: () =>
     request<{ ok: boolean }>('/auth/google/disconnect', { method: 'POST' }),

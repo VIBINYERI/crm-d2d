@@ -25,7 +25,12 @@ app.use(async (_req, res, next) => {
   }
 });
 
-app.get('/api/health', (_req, res) => res.json({ ok: true }));
+// `persistent` tells the UI whether data actually survives: true locally
+// (PGlite on disk) or when DATABASE_URL is set; false on Vercel without a
+// connected database, where /tmp storage evaporates between invocations.
+app.get('/api/health', (_req, res) =>
+  res.json({ ok: true, persistent: Boolean(env.databaseUrl) || !env.isVercel })
+);
 app.use('/api/leads', leadsRouter);
 app.use('/api/auth', authRouter);
 app.use('/api/calendar', calendarRouter);

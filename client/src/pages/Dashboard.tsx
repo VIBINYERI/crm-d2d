@@ -13,9 +13,14 @@ export default function Dashboard() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [week, setWeek] = useState<WeekResponse | null>(null);
   const [weekError, setWeekError] = useState(false);
+  const [persistent, setPersistent] = useState(true);
 
   useEffect(() => {
     api.getStats().then(setStats).catch(() => {});
+    api
+      .getHealth()
+      .then((h) => setPersistent(h.persistent))
+      .catch(() => {});
     api
       .getWeek()
       .then(setWeek)
@@ -52,6 +57,17 @@ export default function Dashboard() {
       />
 
       <div className="space-y-5 p-4">
+        {!persistent && (
+          <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">
+            <p className="font-bold">⚠️ Data is not being saved</p>
+            <p className="mt-1">
+              No database is connected, so anything you enter will disappear. In Vercel: open your
+              project → <strong>Storage</strong> tab → <strong>Create Database</strong> →{' '}
+              <strong>Neon</strong> → Connect, then Redeploy. This banner goes away once it's
+              working.
+            </p>
+          </div>
+        )}
         <div className="grid grid-cols-2 gap-3">
           {counters.map((c) => (
             <div key={c.label} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
